@@ -20,25 +20,42 @@ def _ensure_even(image: Image.Image) -> Image.Image:
     return image
 
 
-def _prepare_grayscale(image: Image.Image) -> np.ndarray:
-    grayscale = image.convert("L")
-    grayscale = _ensure_even(grayscale)
-    width, height = grayscale.size
+# 1. Renamed and updated to handle RGB
+def _prepare_image(image: Image.Image) -> np.ndarray:
+    # Convert to RGB if necessary (e.g. RGBA or Grayscale input)
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    image = _ensure_even(image)
+    width, height = image.size
     if width < 2 or height < 2:
         raise gr.Error("Image must be at least 2x2 pixels after cropping.")
-    return np.asarray(grayscale, dtype=np.float32)
+    return np.asarray(image, dtype=np.float32)
 
 
+# 2. Updated to support 3D arrays (RGB)
 def _normalize_component(component: np.ndarray) -> np.ndarray:
-    min_value = float(component.min())
-    max_value = float(component.max())
-    if max_value - min_value < 1e-8:
-        return np.zeros_like(component, dtype=np.uint8)
-    normalized = (component - min_value) / (max_value - min_value)
-    return (normalized * 255).clip(0, 255).astype(np.uint8)
+    if component.ndim == 3:
+        # Normalize each channel independently to maximize visibility
+        normalized = np.zeros_like(component)
+        for i in range(3):
+            channel = component[:, :, i]
+            min_val = float(channel.min())
+            max_val = float(channel.max())
+            if max_val - min_val < 1e-8:
+                continue
+            normalized[:, :, i] = (channel - min_val) / (max_val - min_val)
+        return (normalized * 255).clip(0, 255).astype(np.uint8)
+    else:
+        min_value = float(component.min())
+        max_value = float(component.max())
+        if max_value - min_value < 1e-8:
+            return np.zeros_like(component, dtype=np.uint8)
+        normalized = (component - min_value) / (max_value - min_value)
+        return (normalized * 255).clip(0, 255).astype(np.uint8)
 
 
 def haar_wavelet_components(image_array: np.ndarray) -> Dict[str, np.ndarray]:
+    # NumPy broadcasting handles both 2D and 3D arrays automatically
     a = image_array[0::2, 0::2]
     b = image_array[0::2, 1::2]
     c = image_array[1::2, 0::2]
@@ -64,14 +81,15 @@ def compute_wavelet(
     if method is None:
         raise gr.Error(f"Unknown wavelet method: {method_name}")
 
-    grayscale = _prepare_grayscale(image)
-    components = method(grayscale)
+    img_array = _prepare_image(image) # Changed from grayscale
+    components = method(img_array)
 
     outputs: List[Image.Image] = []
     for key in COMPONENT_ORDER:
         component = components[key]
         normalized = _normalize_component(component)
-        outputs.append(Image.fromarray(normalized, mode="L"))
+        # 3. Changed mode to RGB
+        outputs.append(Image.fromarray(normalized, mode="RGB"))
     return tuple(outputs)
 
 
@@ -91,19 +109,11 @@ def build_demo() -> gr.Blocks:
             )
         run_button = gr.Button("Compute Wavelet")
         with gr.Row():
-            ll_image = gr.Image(
-                label="LL (Approximation)", show_download_button=True
-            )
-            lh_image = gr.Image(
-                label="LH (Vertical Details)", show_download_button=True
-            )
+            ll_image = gr.Image(label="LL (Approximation)")
+            lh_image = gr.Image(label="LH (Vertical Details)")
         with gr.Row():
-            hl_image = gr.Image(
-                label="HL (Horizontal Details)", show_download_button=True
-            )
-            hh_image = gr.Image(
-                label="HH (Diagonal Details)", show_download_button=True
-            )
+            hl_image = gr.Image(label="HL (Horizontal Details)")
+            hh_image = gr.Image(label="HH (Diagonal Details)")
 
         run_button.click(
             fn=compute_wavelet,
